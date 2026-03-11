@@ -17,12 +17,17 @@ En este contexto, el presente proyecto propone el desarrollo de un sistema embeb
 
 
 **Objetivo General:**
-Desarrollar un prototipo de sistema embebido capaz de monitorear variables fisiológicas básicas, específicamente temperatura superficial de la piel y frecuencia cardíaca, con el fin de detectar condiciones asociadas al sobrecalentamiento durante la actividad física y activar un mecanismo de enfriamiento simulado como respuesta automática.
+Desarrollar un prototipo de sistema embebido capaz de monitorear variables fisiológicas básicas, específicamente la temperatura superficial de la piel y la frecuencia cardíaca, con el fin de detectar condiciones asociadas al sobrecalentamiento durante la actividad física y activar automáticamente un mecanismo de enfriamiento como respuesta.
 
 **Objetivos Específicos**
-1. Definir los componentes del hardware necesarios, incluyecto sensores fisiológicos, microcontroladores y los actuadores necesarios.
-2. Implementar un firmware encargdo de la adquisición, procesamiento y evaluación de datos sobre temperatura y frecuecnia cardiaca.
-3. Establecer umbrales de operación con base a condiciones de sobrecalentamiento y variables fisiológicas. 
-4. Integrar un actuador de enfriamento controlado que se active automáticamente al detectar condiciones de riesgo.
-5. Realizar pruebas del prototipo bajo condiciones simuladas con un sujeto de prueba humano.
-6. Verificar el correcto funcionamiento del sistema y de la interfaz de usuario, permitiendo visualizar las variables fisiológicas monitoreadas, las condiciones de operación del sistema y la activación del mecanismo de enfriamiento cuando se superen los umbrales establecidos.
+1. Definir los componentes de hardware necesarios, incluyendo sensores fisiológicos, microcontrolador y actuadores requeridos para el sistema de enfriamiento.
+
+2. Desarrollar e implementar el firmware encargado de la adquisición, procesamiento y evaluación de los datos provenientes de los sensores de temperatura de piel y frecuencia cardíaca.
+
+3. Establecer umbrales de operación basados en condiciones fisiológicas asociadas a sobrecalentamiento durante la actividad física.
+
+4. Integrar un actuador de enfriamiento controlado electrónicamente que se active automáticamente cuando se detecten condiciones de riesgo.
+
+5. Realizar pruebas experimentales del prototipo bajo condiciones simuladas de ejercicio utilizando un sujeto de prueba humano.
+
+6. Verificar el correcto funcionamiento del sistema y de su interfaz de usuario, comprobando que esta permita visualizar las variables fisiológicas monitoreadas, las condiciones de operación y la activación del mecanismo de enfriamiento ante la superación de los umbrales establecidos.
