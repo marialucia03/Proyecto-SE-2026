@@ -30,6 +30,13 @@ static uint8_t own_addr_type;
 static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t nus_tx_val_handle;
 static bool notify_enabled = false;
+static ble_tx_ready_callback_t tx_ready_callback = NULL;
+static void *tx_ready_callback_ctx = NULL;
+
+static bool ble_tx_ready_internal(void)
+{
+    return (conn_handle != BLE_HS_CONN_HANDLE_NONE) && notify_enabled;
+}
 
 
 /*
@@ -134,15 +141,24 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Cliente desconectado");
+        bool prev_tx_ready = ble_tx_ready_internal();
         conn_handle = BLE_HS_CONN_HANDLE_NONE;
         notify_enabled = false;
+        if (prev_tx_ready && tx_ready_callback != NULL) {
+            tx_ready_callback(false, tx_ready_callback_ctx);
+        }
         ble_app_advertise();
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == nus_tx_val_handle) {
+            bool prev_tx_ready = ble_tx_ready_internal();
             notify_enabled = event->subscribe.cur_notify;
             ESP_LOGI(TAG, "TX Notify: %s", notify_enabled ? "ON" : "OFF");
+            bool now_tx_ready = ble_tx_ready_internal();
+            if (prev_tx_ready != now_tx_ready && tx_ready_callback != NULL) {
+                tx_ready_callback(now_tx_ready, tx_ready_callback_ctx);
+            }
         }
         return 0;
 
@@ -163,14 +179,13 @@ static void ble_app_advertise(void)
 
     int rc;
 
-    // Advertising principal: solo flags + UUID del servicio
+    // Advertising principal: flags + nombre (visible en escaneo pasivo)
     memset(&fields, 0, sizeof(fields));
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-
-    fields.uuids128 = (ble_uuid128_t *)&nus_service_uuid;
-    fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 1;
+    fields.name = (uint8_t *)DEVICE_NAME;
+    fields.name_len = strlen(DEVICE_NAME);
+    fields.name_is_complete = 1;
 
     rc = ble_gap_adv_set_fields(&fields);
 
@@ -179,14 +194,11 @@ static void ble_app_advertise(void)
         return;
     }
 
-    // Scan response: nombre del dispositivo
+    // Scan response: UUID del servicio NUS
     memset(&rsp_fields, 0, sizeof(rsp_fields));
-
-    const char *name = ble_svc_gap_device_name();
-
-    rsp_fields.name = (uint8_t *)name;
-    rsp_fields.name_len = strlen(name);
-    rsp_fields.name_is_complete = 1;
+    rsp_fields.uuids128 = (ble_uuid128_t *)&nus_service_uuid;
+    rsp_fields.num_uuids128 = 1;
+    rsp_fields.uuids128_is_complete = 1;
 
     rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
 
@@ -219,10 +231,22 @@ static void ble_app_advertise(void)
 static void ble_app_on_sync(void)
 {
     int rc = ble_hs_id_infer_auto(0, &own_addr_type);
+    uint8_t addr_val[6] = {0};
 
     if (rc != 0) {
         ESP_LOGE(TAG, "Error obteniendo direccion BLE: %d", rc);
         return;
+    }
+
+    rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
+    if (rc == 0) {
+        ESP_LOGI(TAG,
+                 "BLE addr (%s): %02X:%02X:%02X:%02X:%02X:%02X",
+                 own_addr_type == BLE_OWN_ADDR_PUBLIC ? "public" : "random",
+                 addr_val[5], addr_val[4], addr_val[3],
+                 addr_val[2], addr_val[1], addr_val[0]);
+    } else {
+        ESP_LOGW(TAG, "No se pudo leer direccion BLE: %d", rc);
     }
 
     ble_app_advertise();
@@ -241,11 +265,23 @@ static void ble_host_task(void *param)
 
 void bluetooth_init(void)
 {
+    esp_err_t err;
 
+    err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
 
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Error liberando memoria BT classic: %s",
+                 esp_err_to_name(err));
+        return;
+    }
 
-    ESP_ERROR_CHECK(nimble_port_init());
+    err = nimble_port_init();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NimBLE host init failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
@@ -259,6 +295,19 @@ void bluetooth_init(void)
     ESP_ERROR_CHECK(ble_gatts_add_svcs(gatt_svr_svcs));
 
     nimble_port_freertos_init(ble_host_task);
+
+    ESP_LOGI(TAG, "BLE inicializado correctamente");
+}
+
+bool ble_is_tx_ready(void)
+{
+    return ble_tx_ready_internal();
+}
+
+void ble_register_tx_ready_callback(ble_tx_ready_callback_t callback, void *ctx)
+{
+    tx_ready_callback = callback;
+    tx_ready_callback_ctx = ctx;
 }
 
 /**
