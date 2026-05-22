@@ -1,18 +1,10 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
-#include "stdio.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "driver/i2c.h"
-#define DISPLAY_ADDRESS 0x27
-#define BL   0x08   // bit 3
-#define EN   0x04   // bit 2
-#define RW   0x02   // bit 1  
-#define RS   0x01   // bit 0
-volatile bool resultado_inicializacion = 0;
-volatile bool resultado_4_bit_mode = 0;
+#include "driver/gpio.h"
+
 
 void configuracion_i2c(int I2C_PORT,int PIN_SDA, int PIN_SCL);
 void enviar_bytes_i2c(uint8_t hex_data);
