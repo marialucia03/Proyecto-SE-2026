@@ -1,5 +1,4 @@
 #include <string.h>
-
 #include "comunicaciones.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -10,6 +9,7 @@
 #include "driver/gpio.h"
 
 
+///  Variables de estado de conexion
 typedef struct {
     bool ping;
     bool pong;
@@ -27,13 +27,21 @@ estado_conexion_t status_check_SM = {
 static volatile TickType_t tiempo_ultimo_ping_rx = 0;
 static volatile TickType_t tiempo_ultimo_pong_rx = 0;
 static volatile TickType_t tiempo_ultimo_ping = 0;
-// Últimos datos recibidos desde el peer
+
+
+/// Variable para almacenar los últimos datos recibidos 
 static volatile datos_t ultimo_datos = {0};
 
+
+/// Funciones de la libreria
+
+// Función para enviar el estado de conexión (ping o pong) al peer
 static void enviar_estado_conexion(const estado_conexion_t *estado, const uint8_t *peer_mac) {
     esp_now_send(peer_mac, (const uint8_t *)estado, sizeof(*estado));
 }
 
+
+// Función para configurar WiFi en modo estación y establecer el canal
 void configuracion_wifi(int canal,bool *status_wifi_init) {
     ESP_ERROR_CHECK(esp_netif_init());
 
@@ -62,78 +70,83 @@ void configuracion_wifi(int canal,bool *status_wifi_init) {
     }
 }
 
+
+// Función para configurar ESP-NOW y agregar un peer
 void configuracion_espnow(int canal , const uint8_t *peer_mac, bool *status_espnow_init) {
     ESP_ERROR_CHECK(esp_now_init());
+
+    // Reducir potencia TX para minimizar ruido RF
+    // Valores: 80 (20dBm max), 60 (18dBm), 40 (16dBm)
+    esp_wifi_set_max_tx_power(100);
 
     esp_now_peer_info_t peer_info = {0};
 
     memcpy(peer_info.peer_addr,
            peer_mac,
            6);
-
     peer_info.channel = canal;
     peer_info.encrypt = false;
-
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
-
     if (status_espnow_init != NULL) {
         *status_espnow_init = true;
     }
 }
 
+
+// Función para enviar datos al peer utilizando ESP-NOW
 void enviar_datos(const datos_t *datos, const uint8_t *peer_mac) {
     esp_now_send(peer_mac, (const uint8_t *)datos, sizeof(datos_t));
 }
 
+
+// Función de callback para recibir datos por ESP-NOW
 void recibir_datos(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len == sizeof(estado_conexion_t)) {
         estado_conexion_t estado;
         memcpy(&estado, data, sizeof(estado));
         TickType_t tick_actual = xTaskGetTickCount();
-
         if (estado.ping && recv_info != NULL) {
             tiempo_ultimo_ping_rx = tick_actual;
             estado_conexion_pong(recv_info->src_addr);
         }
-
         if (estado.pong) {
             tiempo_ultimo_pong_rx = tick_actual;
         }
-
         return;
     }
-
     if (len != sizeof(datos_t)) {
         return;
     }
-
     datos_t datos;
     memcpy(&datos, data, sizeof(datos));
     // Guardar copia de los datos recibidos para que la aplicación los consulte
     memcpy((void *)&ultimo_datos, &datos, sizeof(datos_t));
 }
 
+
+// Función para enviar un ping y actualizar el estado de conexión
 void estado_conexion_ping(const uint8_t *peer_mac) {
     enviar_estado_conexion(&status_check_MS, peer_mac);
 }
 
+
+// Funcion para enviar un pong en respuesta a un ping recibido
 void estado_conexion_pong (const uint8_t *peer_mac) {
     enviar_estado_conexion(&status_check_SM, peer_mac);
 }
 
+
+// Función para verificar el estado de la conexión y actualizar un LED si se proporciona un pin
 void ping_pong(const uint8_t *peer_mac, bool *status_conexion, int gpio_led_pin, bool MS) {
     TickType_t tick_actual = xTaskGetTickCount();
-
     if (MS) {
         if (tiempo_ultimo_ping == 0 || (tick_actual - tiempo_ultimo_ping) >= pdMS_TO_TICKS(5000)) {
             estado_conexion_ping(peer_mac);
             tiempo_ultimo_ping = tick_actual;
         }
     }
-
     if (status_conexion != NULL) {
         TickType_t ultimo_paquete_esperado = MS ? tiempo_ultimo_pong_rx : tiempo_ultimo_ping_rx;
-
         if (ultimo_paquete_esperado != 0 && (tick_actual - ultimo_paquete_esperado) <= pdMS_TO_TICKS(5000)) {
             *status_conexion = true;
             if (gpio_led_pin >= 0) {
@@ -144,14 +157,16 @@ void ping_pong(const uint8_t *peer_mac, bool *status_conexion, int gpio_led_pin,
             if (gpio_led_pin >= 0) {
                 gpio_set_level(gpio_led_pin, 0);
             }
-        
         }
     }
 }
 
+
+// Función para que la aplicación pueda obtener los últimos datos recibidos de forma segura
 void obtener_ultimo_datos(datos_t *out) {
     if (out == NULL) return;
     // Copiar de forma atómica una estructura pequeña
     memcpy(out, (const void *)&ultimo_datos, sizeof(datos_t));
 }
+
 
