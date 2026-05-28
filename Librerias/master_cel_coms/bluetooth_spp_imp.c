@@ -1,0 +1,342 @@
+#include "bluetooth_spp.h"
+#include <stdio.h>
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "esp_log.h"
+#include "esp_err.h"
+#include "esp_bt.h"
+
+
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+
+#include "host/ble_hs.h"
+#include "host/ble_gap.h"
+#include "host/ble_gatt.h"
+#include "host/ble_uuid.h"
+
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+
+
+#define DEVICE_NAME "ESP32-MASTER"
+
+static const char *TAG = "ESP32-MASTER";
+
+static uint8_t own_addr_type;
+static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t nus_tx_val_handle;
+static bool notify_enabled = false;
+static ble_tx_ready_callback_t tx_ready_callback = NULL;
+static void *tx_ready_callback_ctx = NULL;
+
+static bool ble_tx_ready_internal(void)
+{
+    return (conn_handle != BLE_HS_CONN_HANDLE_NONE) && notify_enabled;
+}
+
+
+/*
+ * UUIDs oficiales del Nordic UART Service:
+ * Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
+ * RX:      6e400002-b5a3-f393-e0a9-e50e24dcca9e
+ * TX:      6e400003-b5a3-f393-e0a9-e50e24dcca9e
+ *
+ * En NimBLE se escriben en orden little-endian.
+ */
+static const ble_uuid128_t nus_service_uuid =
+    BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+                     0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e);
+
+static const ble_uuid128_t nus_rx_uuid =
+    BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+                     0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40, 0x6e);
+
+static const ble_uuid128_t nus_tx_uuid =
+    BLE_UUID128_INIT(0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+                     0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40, 0x6e);
+
+void nus_send_response(const char *msg)
+{
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE || !notify_enabled) {
+        ESP_LOGW(TAG, "Cliente no conectado o no suscrito a TX Notify");
+        return;
+    }
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(msg, strlen(msg));
+
+    if (om == NULL) {
+        ESP_LOGE(TAG, "No se pudo crear buffer BLE");
+        return;
+    }
+
+    int rc = ble_gatts_notify_custom(conn_handle, nus_tx_val_handle, om);
+
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error enviando notificacion: %d", rc);
+    }
+}
+
+
+
+// Versión simplificada para librería
+static int nus_rx_access_cb(uint16_t conn_handle_param, uint16_t attr_handle,
+                            struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    // Solo procesar si es necesario para comandos de configuración
+    ESP_LOGI(TAG, "Comando recibido desde Tablet");
+    return 0;
+}
+
+static int nus_tx_access_cb(uint16_t conn_handle_param,
+                            uint16_t attr_handle,
+                            struct ble_gatt_access_ctxt *ctxt,
+                            void *arg)
+{
+    return 0;
+}
+
+static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &nus_service_uuid.u,
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            {
+                .uuid = &nus_rx_uuid.u,
+                .access_cb = nus_rx_access_cb,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &nus_tx_uuid.u,
+                .access_cb = nus_tx_access_cb,
+                .val_handle = &nus_tx_val_handle,
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                0,
+            }
+        },
+    },
+    {
+        0,
+    }
+};
+
+static void ble_app_advertise(void);
+
+static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
+{
+    switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status == 0) {
+            conn_handle = event->connect.conn_handle;
+            ESP_LOGI(TAG, "Cliente conectado");
+        } else {
+            ESP_LOGW(TAG, "Conexion fallida, reanudando advertising");
+            ble_app_advertise();
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "Cliente desconectado");
+        bool prev_tx_ready = ble_tx_ready_internal();
+        conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        notify_enabled = false;
+        if (prev_tx_ready && tx_ready_callback != NULL) {
+            tx_ready_callback(false, tx_ready_callback_ctx);
+        }
+        ble_app_advertise();
+        return 0;
+
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        if (event->subscribe.attr_handle == nus_tx_val_handle) {
+            bool prev_tx_ready = ble_tx_ready_internal();
+            notify_enabled = event->subscribe.cur_notify;
+            ESP_LOGI(TAG, "TX Notify: %s", notify_enabled ? "ON" : "OFF");
+            bool now_tx_ready = ble_tx_ready_internal();
+            if (prev_tx_ready != now_tx_ready && tx_ready_callback != NULL) {
+                tx_ready_callback(now_tx_ready, tx_ready_callback_ctx);
+            }
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        ble_app_advertise();
+        return 0;
+
+    default:
+        return 0;
+    }
+}
+
+static void ble_app_advertise(void)
+{
+    struct ble_hs_adv_fields fields;
+    struct ble_hs_adv_fields rsp_fields;
+    struct ble_gap_adv_params adv_params;
+
+    int rc;
+
+    // Advertising principal: flags + nombre (visible en escaneo pasivo)
+    memset(&fields, 0, sizeof(fields));
+
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (uint8_t *)DEVICE_NAME;
+    fields.name_len = strlen(DEVICE_NAME);
+    fields.name_is_complete = 1;
+
+    rc = ble_gap_adv_set_fields(&fields);
+
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error configurando advertising: %d", rc);
+        return;
+    }
+
+    // Scan response: UUID del servicio NUS
+    memset(&rsp_fields, 0, sizeof(rsp_fields));
+    rsp_fields.uuids128 = (ble_uuid128_t *)&nus_service_uuid;
+    rsp_fields.num_uuids128 = 1;
+    rsp_fields.uuids128_is_complete = 1;
+
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error configurando scan response: %d", rc);
+        return;
+    }
+
+    memset(&adv_params, 0, sizeof(adv_params));
+
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+
+    rc = ble_gap_adv_start(
+        own_addr_type,
+        NULL,
+        BLE_HS_FOREVER,
+        &adv_params,
+        ble_gap_event_cb,
+        NULL
+    );
+
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error iniciando advertising: %d", rc);
+    } else {
+        ESP_LOGI(TAG, "Advertising iniciado como %s", DEVICE_NAME);
+    }
+}
+
+static void ble_app_on_sync(void)
+{
+    int rc = ble_hs_id_infer_auto(0, &own_addr_type);
+    uint8_t addr_val[6] = {0};
+
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Error obteniendo direccion BLE: %d", rc);
+        return;
+    }
+
+    rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
+    if (rc == 0) {
+        ESP_LOGI(TAG,
+                 "BLE addr (%s): %02X:%02X:%02X:%02X:%02X:%02X",
+                 own_addr_type == BLE_OWN_ADDR_PUBLIC ? "public" : "random",
+                 addr_val[5], addr_val[4], addr_val[3],
+                 addr_val[2], addr_val[1], addr_val[0]);
+    } else {
+        ESP_LOGW(TAG, "No se pudo leer direccion BLE: %d", rc);
+    }
+
+    ble_app_advertise();
+}
+
+static void ble_app_on_reset(int reason)
+{
+    ESP_LOGE(TAG, "Reset BLE, reason=%d", reason);
+}
+
+static void ble_host_task(void *param)
+{
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+void bluetooth_init(void)
+{
+    esp_err_t err;
+
+    err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Error liberando memoria BT classic: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    err = nimble_port_init();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NimBLE host init failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+
+    ble_svc_gap_device_name_set(DEVICE_NAME);
+
+    ble_hs_cfg.sync_cb = ble_app_on_sync;
+    ble_hs_cfg.reset_cb = ble_app_on_reset;
+
+    ESP_ERROR_CHECK(ble_gatts_count_cfg(gatt_svr_svcs));
+    ESP_ERROR_CHECK(ble_gatts_add_svcs(gatt_svr_svcs));
+
+    nimble_port_freertos_init(ble_host_task);
+
+    ESP_LOGI(TAG, "BLE inicializado correctamente");
+}
+
+bool ble_is_tx_ready(void)
+{
+    return ble_tx_ready_internal();
+}
+
+void ble_register_tx_ready_callback(ble_tx_ready_callback_t callback, void *ctx)
+{
+    tx_ready_callback = callback;
+    tx_ready_callback_ctx = ctx;
+}
+
+/**
+ * @brief Envía el reporte de inicializaciones.
+ * Formato: "INIT: W:1, E:1, A:0, I:1, P:1"
+ */
+void ble_send_log_inits(const logs_inits_t *inits) {
+    if (inits == NULL) return;
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "INIT: W:%d, E:%d, A:%d, I:%d, P:%d",
+            inits->status_wifi_init, inits->status_espnow_init,
+            inits->status_adc_init, inits->status_i2c_init, 
+            inits->status_pwm_init);
+    
+    nus_send_response(buf);
+}
+
+/**
+ * @brief Envía el reporte de estado operativo.
+ * Formato: "STAT: P:1, C:0, L:1"
+ */
+void ble_send_log_status(const logs_status_t *status) {
+    if (status == NULL) return;
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "STAT: P:%d, C:%d, L:%d",
+             status->status_pwm, status->status_conexion, 
+             status->status_lectura);
+    
+    nus_send_response(buf);
+}
