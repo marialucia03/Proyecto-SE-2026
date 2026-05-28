@@ -15,13 +15,13 @@ En la actualidad existen dispositivos capaces de monitorear variables fisiológi
 
 En este contexto, el presente proyecto propone el desarrollo de un sistema embebido capaz de monitorear en tiempo real la temperatura superficial de la piel y la frecuencia cardíaca de un deportista durante la actividad física. A partir de dichas mediciones, el sistema evaluará el estado fisiológico del usuario y determinará si se presentan condiciones asociadas a un posible sobrecalentamiento corporal. Con base a este análisis, se activará automáticamente un mecanismo de enfriamiento mediante una microbomba, encargada de hacer circular líquido refrigerante a través de un sistema de enfriamiento portátil. Adicionalmente, el sistema registrará los eventos relevantes de funcionamiento y permitirá visualizar su estado operativo por medio de una interfaz de usuario. 
 
-
 **Objetivo General**
 
 Desarrollar un prototipo de sistema embebido capaz de monitorear variables fisiológicas básicas, específicamente la temperatura superficial de la piel y la frecuencia cardíaca, con el fin de detectar condiciones asociadas al sobrecalentamiento durante la actividad física y activar automáticamente un mecanismo de enfriamiento como respuesta.
 
 **Objetivos Específicos**
-1. Definir los componentes de hardware necesarios, incluyendo sensores fisiológicos, microcontrolador y actuadores requeridos para el sistema de enfriamiento.
+
+1. Seleccionar e integrar los componentes de hardware del sistema (sensores fisiológicos, microcontrolador, actuador de enfriamiento y etapa de alimentación), justificando técnicamente cada elección.
 
 2. Desarrollar e implementar el firmware encargado de la adquisición, procesamiento y evaluación de los datos provenientes de los sensores de temperatura de piel y frecuencia cardíaca.
 
