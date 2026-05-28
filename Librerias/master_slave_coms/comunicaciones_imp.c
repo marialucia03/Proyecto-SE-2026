@@ -30,7 +30,10 @@ static volatile TickType_t tiempo_ultimo_ping = 0;
 
 
 /// Variable para almacenar los últimos datos recibidos 
-static volatile datos_t ultimo_datos = {0};
+static volatile datos_slave_t ultimo_datos = {0};
+// Además guardamos los últimos datos enviados por el maestro (esclavo necesita leerlos)
+static volatile datos_master_t ultimo_datos_master = {0};
+// Callback para petición de logs (registrado por la aplicación si la tiene)
 
 
 /// Funciones de la libreria
@@ -94,8 +97,13 @@ void configuracion_espnow(int canal , const uint8_t *peer_mac, bool *status_espn
 
 
 // Función para enviar datos al peer utilizando ESP-NOW
-void enviar_datos(const datos_t *datos, const uint8_t *peer_mac) {
-    esp_now_send(peer_mac, (const uint8_t *)datos, sizeof(datos_t));
+void enviar_datos(const datos_master_t *datos, const uint8_t *peer_mac) {
+    esp_now_send(peer_mac, (const uint8_t *)datos, sizeof(datos_master_t));
+}
+
+// Enviar datos desde el esclavo al maestro
+void enviar_datos_slave(const datos_slave_t *datos, const uint8_t *peer_mac) {
+    esp_now_send(peer_mac, (const uint8_t *)datos, sizeof(datos_slave_t));
 }
 
 
@@ -114,13 +122,24 @@ void recibir_datos(const esp_now_recv_info_t *recv_info, const uint8_t *data, in
         }
         return;
     }
-    if (len != sizeof(datos_t)) {
+    // No procesar peticiones "logs" por ESP-NOW (se manejan por BLE)
+    // Si recibimos datos del maestro (datos_master_t)
+    if (len == sizeof(datos_master_t)) {
+        datos_master_t datos_m;
+        memcpy(&datos_m, data, sizeof(datos_m));
+        memcpy((void *)&ultimo_datos_master, &datos_m, sizeof(datos_master_t));
         return;
     }
-    datos_t datos;
-    memcpy(&datos, data, sizeof(datos));
-    // Guardar copia de los datos recibidos para que la aplicación los consulte
-    memcpy((void *)&ultimo_datos, &datos, sizeof(datos_t));
+    // Si recibimos datos del esclavo (datos_slave_t)
+    if (len == sizeof(datos_slave_t)) {
+        datos_slave_t datos_s;
+        memcpy(&datos_s, data, sizeof(datos_s));
+        // Guardar copia de los datos recibidos para que la aplicación los consulte
+        memcpy((void *)&ultimo_datos, &datos_s, sizeof(datos_slave_t));
+        return;
+    }
+    // otros tamaños: ignorar
+    return;
 }
 
 
@@ -163,10 +182,14 @@ void ping_pong(const uint8_t *peer_mac, bool *status_conexion, int gpio_led_pin,
 
 
 // Función para que la aplicación pueda obtener los últimos datos recibidos de forma segura
-void obtener_ultimo_datos(datos_t *out) {
+void obtener_ultimo_datos(datos_slave_t *out) {
     if (out == NULL) return;
     // Copiar de forma atómica una estructura pequeña
-    memcpy(out, (const void *)&ultimo_datos, sizeof(datos_t));
+    memcpy(out, (const void *)&ultimo_datos, sizeof(datos_slave_t));
 }
 
-
+// Obtener los últimos datos recibidos desde el maestro
+void obtener_ultimo_datos_master(datos_master_t *out) {
+    if (out == NULL) return;
+    memcpy(out, (const void *)&ultimo_datos_master, sizeof(datos_master_t));
+}
