@@ -18,6 +18,10 @@ void print_pantalla(const char* str);
 void pantalla_datos_biometricos(int bpm, int temperatura, bool pwm_on);
 void pantalla_conexion_espnow(bool estado_conexion);
 void pantalla_pausa();
+bool display_en_pausa(void);
+bool display_apagado(void);
+void display_encender(void);
+void display_apagar(void);
 bool display_cambio_pantalla_pendiente(void);
 uint8_t display_pantalla_solicitada(void);
 void display_limpiar_cambio_pantalla(void);
@@ -26,4 +30,5 @@ int  control_display_actualizar();
 bool display_pwm_override_pending(void);
 bool display_get_pwm_override(void);
 void display_clear_pwm_override(void);
+void display_forzar_pwm_off(void);
 #endif
