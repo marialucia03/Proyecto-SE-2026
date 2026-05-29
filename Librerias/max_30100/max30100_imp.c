@@ -47,7 +47,7 @@ void configuracion_max30100(bool *status_init) {
     
     // Configurar el sensor para medir el ritmo cardíaco
     if (ret == ESP_OK) ret = enviar_bytes_i2c_max30100(0x07, 0x47); // Configuración del modo de operación (Heart Rate mode)
-    if (ret == ESP_OK) ret = enviar_bytes_i2c_max30100(0x09, 0x0F); // Configuración del LED rojo (Red LED current)
+    if (ret == ESP_OK) ret = enviar_bytes_i2c_max30100(0x09, 0x09); // Configuración del LED rojo (Red LED current)
     if (ret == ESP_OK) ret = enviar_bytes_i2c_max30100(0x06,0x02);
 
     if (status_init != NULL) {
