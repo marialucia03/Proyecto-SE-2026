@@ -26,10 +26,10 @@ static int clamp_int(int valor, int min, int max)
 
 
 // Configuracion pwm
-void configuracion_pwm(    gpio_num_t pin,    ledc_channel_t canal,    ledc_timer_t timer,    int frecuencia,    ledc_timer_bit_t resolucion_bits,    bool *status_pwm_init)
+void configuracion_pwm(    gpio_num_t pin,    ledc_channel_t canal,    ledc_timer_t timer,    int frecuencia,    ledc_timer_bit_t resolucion_bits,    int *status_pwm_init)
 {
     if (status_pwm_init != NULL) {
-        *status_pwm_init = false;
+        *status_pwm_init = -1;
     }
     canal_pwm = canal;
     timer_pwm = timer;
@@ -61,7 +61,7 @@ void configuracion_pwm(    gpio_num_t pin,    ledc_channel_t canal,    ledc_time
     duty_maximo = (1 << resolucion_bits) - 1;
     pwm_configurado = true;
     if (status_pwm_init != NULL) {
-        *status_pwm_init = true;
+        *status_pwm_init = 1;
 }
 }
 
@@ -85,9 +85,9 @@ void setear_duty_cycle(uint32_t duty, bool *status)
 
 
 // Encender el PWM de forma suave
-void encender_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    bool *status_pwm){
+void encender_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    int *status_pwm){
     if (status_pwm != NULL) {
-        *status_pwm = false;
+        *status_pwm = -1;
     }
     uint32_t delay_ms = tiempo_ms / pasos;
     for (uint32_t i = 0; i <= pasos; i++) {
@@ -97,16 +97,16 @@ void encender_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    bool *stat
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
     if (status_pwm != NULL) {
-        *status_pwm = true;
+        *status_pwm = 1;
     }
 }
 
 
 // Funcion para apagar el PWM de forma suave
-void apagar_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    bool *status_pwm)
+void apagar_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    int *status_pwm)
 {
     if (status_pwm != NULL) {
-        *status_pwm = false;
+        *status_pwm = -1;
     }
     uint32_t delay_ms = tiempo_ms / pasos;
     for (int i = pasos; i >= 0; i--) {
@@ -116,6 +116,6 @@ void apagar_pwm_suave(    uint32_t tiempo_ms,    uint32_t pasos,    bool *status
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
     if (status_pwm != NULL) {
-        *status_pwm = true;
+        *status_pwm = 0;
     }
 }
