@@ -43,7 +43,7 @@ static uint16_t filtro_pasabajas(uint16_t entrada)
     //-----------------------------------------
     // alpha pequeño = más suavizado
     //-----------------------------------------
-    const float alpha = 0.2f;
+    const float alpha = 0.4f;
 
     lowpass_state =
         lowpass_state +
@@ -309,3 +309,4 @@ bool ppg_bpm_signal_ok(void)
 {
     return signal_ok;
 }
+
