@@ -12,6 +12,7 @@
 #define EN   0x04   // bit 2
 #define RW   0x02   // bit 1  
 #define RS   0x01   // bit 0
+#define PAUSA_APAGADO_MS 3000
 
 // Configured by configuracion_i2c so other functions don't need the port.
 static i2c_port_t s_i2c_port = I2C_NUM_0;
@@ -19,11 +20,20 @@ static int pantalla_actual = -1; // 0: datos biométricos, 1: conexión ESP-NOW,
 static volatile bool s_cambio_pantalla_pendiente = false;
 static volatile uint8_t s_pantalla_solicitada = 255;
 static bool s_display_ok = false;
+static bool s_display_apagado = false;
+static gpio_num_t s_pin_pausa = GPIO_NUM_MAX;
+static TickType_t s_pausa_presion_inicio = 0;
+static bool s_pausa_apagado_consumado = false;
 extern SemaphoreHandle_t g_i2c_mutex;
 
 // PWM override state: button on slave toggles this and slave will send to master
 static volatile bool s_pwm_override_pending = false;
 static volatile bool s_pwm_override = false;
+
+static uint8_t lcd_backlight_bit(void)
+{
+    return s_display_apagado ? 0x00 : BL;
+}
 
 #define PANTALLA_BIOMETRICOS 0
 #define PANTALLA_CONEXION    1
@@ -75,38 +85,38 @@ void enviar_al_lcd(uint8_t byte, uint8_t flags){
     uint8_t nibble_bajo = (byte & 0x0F) << 4;   // toma los 4 bits bajos y los sube
 
     // nibble alto con pulso EN
-    enviar_bytes_i2c(nibble_alto | BL | EN | flags);
+    enviar_bytes_i2c(nibble_alto | lcd_backlight_bit() | EN | flags);
     esp_rom_delay_us(1);
-    enviar_bytes_i2c(nibble_alto | BL      | flags);
+    enviar_bytes_i2c(nibble_alto | lcd_backlight_bit()      | flags);
     esp_rom_delay_us(50);
 
     // nibble bajo con pulso EN
-    enviar_bytes_i2c(nibble_bajo | BL | EN | flags);
+    enviar_bytes_i2c(nibble_bajo | lcd_backlight_bit() | EN | flags);
     esp_rom_delay_us(1);
-    enviar_bytes_i2c(nibble_bajo | BL      | flags);
+    enviar_bytes_i2c(nibble_bajo | lcd_backlight_bit()      | flags);
     esp_rom_delay_us(50);
 }
 
 void inicializar_display(bool *status_display){
     vTaskDelay(pdMS_TO_TICKS(50)); // Espera a que el LCD esté listo
-    enviar_bytes_i2c(0x30 | BL | EN);   // 0x3 en posición alta, EN=1
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit() | EN);   // 0x3 en posición alta, EN=1
     esp_rom_delay_us(100);
-    enviar_bytes_i2c(0x30 | BL);        // EN=0, HD44780 captura
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit());        // EN=0, HD44780 captura
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    enviar_bytes_i2c(0x30 | BL | EN );
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit() | EN );
     esp_rom_delay_us(100);
-    enviar_bytes_i2c(0x30 | BL );
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit() );
     esp_rom_delay_us(150);
 
-    enviar_bytes_i2c(0x30 | BL | EN);
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit() | EN);
     esp_rom_delay_us(100);
-    enviar_bytes_i2c(0x30 | BL);
+    enviar_bytes_i2c(0x30 | lcd_backlight_bit());
     esp_rom_delay_us(150);
 
-    enviar_bytes_i2c(0x20 | BL | EN);
+    enviar_bytes_i2c(0x20 | lcd_backlight_bit() | EN);
     esp_rom_delay_us(100);
-    enviar_bytes_i2c(0x20 | BL);
+    enviar_bytes_i2c(0x20 | lcd_backlight_bit());
     esp_rom_delay_us(150);
 
     enviar_al_lcd(0x28, 0x00);          // function set: 4 bits, 2 líneas, 5x8
@@ -128,10 +138,18 @@ bool display_status_ok(void) {
 
 
 void lcd_clear() {
+    if (s_display_apagado) {
+        return;
+    }
+
     enviar_al_lcd(0x01, 0x00);
     vTaskDelay(pdMS_TO_TICKS(2));
 }
 void lcd_set_cursor(uint8_t fila, uint8_t columna) {
+
+    if (s_display_apagado) {
+        return;
+    }
 
     uint8_t direccion;
 
@@ -154,6 +172,10 @@ void lcd_set_cursor(uint8_t fila, uint8_t columna) {
 }
 
 void print_pantalla(const char* formato, ...) {
+    if (s_display_apagado) {
+        return;
+    }
+
     char buffer[33];  // máximo 32 caracteres del display + null terminator
     
     va_list args;
@@ -174,6 +196,10 @@ void print_pantalla(const char* formato, ...) {
 }
 
 void pantalla_datos_biometricos(int bpm, int temperatura, bool pwm_on) {
+    if (s_display_apagado) {
+        return;
+    }
+
     if (pantalla_actual != 0) {
         enviar_al_lcd(0x01, 0x00);
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -199,6 +225,10 @@ void pantalla_datos_biometricos(int bpm, int temperatura, bool pwm_on) {
 }
 
 void pantalla_conexion_espnow(bool estado_conexion) {
+    if (s_display_apagado) {
+        return;
+    }
+
     if (pantalla_actual != 1) {
         enviar_al_lcd(0x01, 0x00);
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -226,6 +256,52 @@ void pantalla_pausa() {
         print_pantalla("Presione boton");   // texto fijo
         pantalla_actual = 2;
     }
+
+    if (s_display_apagado || s_pin_pausa == GPIO_NUM_MAX) {
+        return;
+    }
+
+    if (gpio_get_level(s_pin_pausa) == 0) {
+        if (s_pausa_presion_inicio == 0) {
+            s_pausa_presion_inicio = xTaskGetTickCount();
+        }
+
+        if (!s_pausa_apagado_consumado &&
+            (xTaskGetTickCount() - s_pausa_presion_inicio) >= pdMS_TO_TICKS(PAUSA_APAGADO_MS)) {
+            display_apagar();
+            s_pausa_apagado_consumado = true;
+        }
+    } else {
+        s_pausa_presion_inicio = 0;
+        s_pausa_apagado_consumado = false;
+    }
+}
+
+bool display_en_pausa(void) {
+    return pantalla_actual == 2;
+}
+
+bool display_apagado(void) {
+    return s_display_apagado;
+}
+
+void display_encender(void) {
+    if (!s_display_apagado) {
+        return;
+    }
+
+    s_display_apagado = false;
+    pantalla_actual = -1;
+}
+
+void display_apagar(void) {
+    if (s_display_apagado) {
+        return;
+    }
+
+    enviar_al_lcd(0x08, 0x00);   // display off
+    vTaskDelay(pdMS_TO_TICKS(2));
+    s_display_apagado = true;
 }
 
 
@@ -293,6 +369,7 @@ void display_limpiar_cambio_pantalla(void) {
 
 // Nueva versión con pin para override PWM
 void configuracion_control_display(gpio_num_t pin_b1, gpio_num_t pin_b2, gpio_num_t pin_b3, gpio_num_t pin_pwm_override) {
+    s_pin_pausa = pin_b3;
     uint64_t mask = (1ULL << pin_b1) | (1ULL << pin_b2) | (1ULL << pin_b3);
     if (pin_pwm_override != GPIO_NUM_MAX) {
         mask |= (1ULL << pin_pwm_override);
@@ -328,6 +405,11 @@ void display_clear_pwm_override(void) {
     s_pwm_override_pending = false;
 }
 
+void display_forzar_pwm_off(void) {
+    s_pwm_override = false;
+    s_pwm_override_pending = true;
+}
+
 int  control_display_actualizar() {
 
         switch (s_pantalla_solicitada) {
@@ -346,4 +428,5 @@ int  control_display_actualizar() {
         return pantalla_actual;
         display_limpiar_cambio_pantalla();
 }
+
 
