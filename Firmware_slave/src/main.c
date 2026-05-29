@@ -35,6 +35,7 @@ int bpm_local = 0; // BPM medido localmente en el slave
 int bpm_raw=0;
 int bpm_vm = 0;
 int pantalla_actual = 0;
+static bool pausa_activa_anterior = false;
 
 
 
@@ -113,17 +114,22 @@ static void display_init(void){
 // Tarea de comunicación ESP-NOW: Envía bpm local al master
 void tarea_envio_datos(void *pvParameters) {
     while (1) {
+        bool modo_pausa = display_en_pausa();
 
         logs_status_actual.status_temp = false;
         logs_status_actual.status_display = display_status_ok();
-        logs_status_actual.status_bpm = ppg_bpm_signal_ok();
+        logs_status_actual.status_bpm = modo_pausa ? false : ppg_bpm_signal_ok();
+
+        if (modo_pausa) {
+            display_forzar_pwm_off();
+        }
 
         datos_slave_t datos = {
-            .bpm = bpm_local,
+            .bpm = modo_pausa ? 0 : bpm_local,
             .status_i2c_init = logs_inits.i2c_init,
             .status_display = logs_status_actual.status_display,
             .status_bpm_signal = logs_status_actual.status_bpm,
-            .pwm_override = display_get_pwm_override(),
+            .pwm_override = modo_pausa ? false : display_get_pwm_override(),
         };
         enviar_datos_slave(&datos, DIRC_MAC_MASTER);
         // If the override was pending, clear the pending flag after sending
@@ -152,6 +158,21 @@ void tarea_control_display(void *pvParameters) {
             pantalla_actual = display_pantalla_solicitada();
             display_limpiar_cambio_pantalla();
         }
+
+        bool modo_pausa = display_en_pausa();
+
+        if (pantalla_actual == 0 && display_apagado()) {
+            display_encender();
+        }
+
+        if (modo_pausa && !pausa_activa_anterior) {
+            display_forzar_pwm_off();
+            bpm_local = 0;
+            pausa_activa_anterior = true;
+        } else if (!modo_pausa && pausa_activa_anterior) {
+            pausa_activa_anterior = false;
+        }
+
         if (pantalla_actual == 0) {
             datos_master_t datos_recibidos;
             obtener_ultimo_datos_master(&datos_recibidos);
@@ -175,6 +196,12 @@ void tarea_bpm(void *arg)
 
     while (1)
     {
+        if (display_en_pausa()) {
+            bpm_local = 0;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         esp_err_t ret =
         max30100_read_fifo(&ir_value);
 
@@ -215,10 +242,10 @@ void app_main() {
         ESP_ERROR_CHECK(nvs_flash_init());
         }
 
-    // Mutex para control del bus I2C compartido
+    /* Create I2C mutex before initializing drivers that use I2C */
     g_i2c_mutex = xSemaphoreCreateMutex();
     if (g_i2c_mutex == NULL) {
-        return; 
+        return; /* cannot continue without I2C protection */
     }
 
     // Inicialización de componentes
